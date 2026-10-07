@@ -1,0 +1,37 @@
+app:
+  front-end-domain: "http://localhost:5173"
+  google:
+    client-id: 984627537144-ujge6icvv22vgvg78jak3a4abo6avjvk.apps.googleusercontent.com
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/elingo
+    username: root
+    password: 123456
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: 587
+    username: gameronline314@gmail.com
+    password: kfqh dtix yldg rzom
+
+jwt:
+  signer-key: be1d1181daf5fff858cff997560dd014c793131e13169a0bf20ee381fde64d0a252d646502726ea4ea153df78b51eea2db9b5f31e5705cf57be76f57a013d35b
+
+springdoc:
+  swagger-ui:
+    enabled: true
+  api-docs:
+    enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.elingo: DEBUG
+    org.hibernate.SQL: DEBUG

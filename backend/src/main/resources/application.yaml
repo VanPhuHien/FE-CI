@@ -1,0 +1,33 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api/v1
+
+spring:
+  application:
+    name: elingo
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  mail:
+    properties:
+      mail:
+        smtp:
+          auth: true # Bật tính năng xác thực người dùng (phải cung cấp username, password)
+          starttls:
+            enable: true # Bật cơ chế bảo mật STARTTLS (kết nối mã hóa an toàn (TLS))
+
+jwt:
+  access-token-time: 15 # minute
+  refresh-token-time: 14 # day
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+
+app:
+  otp:
+    expiration-minutes: 15
