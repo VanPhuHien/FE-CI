@@ -4,7 +4,6 @@ import com.elingo.auth.service.JwtService;
 import com.elingo.common.dto.ApiResponse;
 import com.elingo.common.dto.ErrorDetail;
 import com.elingo.common.exception.AppError;
-import java.util.List;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -13,6 +12,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -27,6 +27,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.List;
 
 @Component
 @RequiredArgsConstructor
@@ -34,13 +35,15 @@ import java.io.IOException;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
+    private final ObjectMapper objectMapper;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
         return path.startsWith("/swagger-ui")
                 || path.startsWith("/v3/api-docs")
-                || path.equals("/swagger-ui.html");
+                || path.equals("/swagger-ui.html")
+                || path.startsWith("/webhooks/payments");
     }
 
     @Override
@@ -65,7 +68,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 context.setAuthentication(authentication);
                 SecurityContextHolder.setContext(context);
-            } catch (JwtException ex) {
+
+                MDC.put(RequestLoggingFilter.USER_ID, String.valueOf(userId));
+            } catch (JwtException | IllegalArgumentException ex) {
+                log.warn("JWT rejected reason={} path={}",
+                        ex.getClass().getSimpleName(), request.getRequestURI());
+
                 AppError appError = AppError.UNAUTHENTICATED;
 
                 response.setStatus(appError.getHttpStatusCode().value());
@@ -74,12 +82,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 ApiResponse<?> apiResponse = ApiResponse.builder()
                         .success(false)
                         .message(appError.getMessage())
+                        .requestId(MDC.get(RequestLoggingFilter.REQUEST_ID))
                         .errors(List.of(ErrorDetail.builder()
                                 .code(appError.getCode())
                                 .message(appError.getMessage())
                                 .build()))
                         .build();
-                ObjectMapper objectMapper = new ObjectMapper();
+
                 response.getWriter().write(objectMapper.writeValueAsString(apiResponse));
                 return;
             }
