@@ -27,6 +27,7 @@ com.elingo
 ├── premium/
 ├── community/
 ├── report/
+├── file/
 ├── notification/
 └── gamification/
 ```
@@ -148,7 +149,7 @@ flashcard/
 ├── repository/FlashcardReviewRepository.java
 ├── entity/FlashcardReview.java (cardId, userId, easeFactor, interval, dueDate, level SM-2)
 └── dto/
-    ├── request/ReviewFeedbackRequest.java (Again/Hard/Good/Easy)
+    ├── request/SrsReviewRequest.java (Again/Hard/Good/Easy)
     └── response/DueCardResponse.java
 ```
 **Chức năng:** hiển thị thẻ đến hạn ôn tập, nhận đánh giá 4 mức (Again/Hard/Good/Easy), `SpacedRepetitionService` áp dụng thuật toán SM-2 tính `interval`/`easeFactor`/`dueDate` tiếp theo.
@@ -205,19 +206,76 @@ progress/
 ---
 
 ## 9. `battle/`
-**Ý nghĩa:** Đấu trường từ vựng 1vs1 theo thời gian thực.
+**Ý nghĩa:** Đấu trường từ vựng 1vs1 theo thời gian thực (realtime vocabulary battle).
 
 ```
 battle/
-├── controller/BattleController.java (REST: tạo phòng, lấy lịch sử)
-├── websocket/BattleSocketHandler.java hoặc BattleWebSocketController.java (STOMP: đồng bộ câu hỏi, thời gian, điểm)
-├── service/BattleMatchService.java (ghép trận ngẫu nhiên), BattleRoomService.java (tạo/tham gia phòng qua mã), BattleScoringService.java
-├── repository/BattleMatchRepository.java, BattleRoomRepository.java
-├── entity/BattleMatch.java, BattleRoom.java, BattleAnswer.java
-└── dto/... (câu hỏi, trạng thái người chơi, kết quả)
+├── controller/
+│   ├── BattleController.java (REST: GET /battles/history, GET /battles/{matchId}, GET /battles/stats)
+│   └── BattleSocketController.java (STOMP @MessageMapping: queue, room, answer, rejoin, active-match)
+├── websocket/
+│   ├── BattleEventPublisher.java (gửi envelope {event, data} qua SimpMessagingTemplate tới /user/queue/battle)
+│   └── BattleWsExceptionHandler.java (bắt lỗi WS, trả BATTLE_ERROR)
+├── service/
+│   ├── BattleQueueService.java & impl (hàng đợi ghép trận ngẫu nhiên)
+│   ├── BattleRoomService.java & impl (tạo và vào phòng riêng 6 ký tự)
+│   ├── BattleMatchService.java & impl (khởi tạo trận đấu)
+│   ├── BattleEngineService.java & impl (vòng lặp 10 vòng, chấm điểm, timeout, forfeit, cancel, conclude)
+│   ├── BattleQuestionService.java & impl (sinh câu hỏi từ hệ thống card PUBLISHED)
+│   ├── BattleConnectionService.java & impl (quản lý ngắt kết nối, grace timer 15s, rejoin)
+│   ├── BattleMatchPersistenceService.java & impl (lưu trận, vòng, câu trả lời vào DB)
+│   ├── BattleHistoryService.java & impl (lấy lịch sử phân trang PageResponse, chi tiết trận, thống kê)
+│   └── BattleXpService.java & impl (tính và phát thưởng XpGainedEvent)
+├── state/
+│   ├── BattleLiveRegistry.java (lưu trận đang diễn ra trong RAM)
+│   ├── BattleRoomRegistry.java (lưu phòng chờ riêng trong RAM)
+│   ├── BattleSessionRegistry.java (đếm session subscribe kênh /user/queue/battle)
+│   ├── LiveMatch.java, LiveRound.java, LiveAnswer.java, LiveQuestion.java, LiveRoom.java, QueueEntry.java
+├── repository/
+│   ├── BattleMatchRepository.java, BattleParticipantRepository.java
+│   ├── BattleQuestionRepository.java, BattleQuestionOptionRepository.java, BattleAnswerRepository.java
+├── entity/
+│   ├── BattleMatch.java, BattleParticipant.java, BattleQuestion.java
+│   ├── BattleQuestionOption.java, BattleAnswer.java, BattleResult.java
+└── listener/
+    ├── BattleSessionSubscribeListener.java (theo dõi subscribe/unsubscribe kênh battle)
+    ├── BattleSessionDisconnectListener.java (dọn hàng đợi và phòng khi disconnect)
+    └── BattleOrphanCleanupListener.java (hủy trận mồ côi khi khởi động app)
 ```
 
-**Chức năng:** ghép trận ngẫu nhiên hoặc tạo/tham gia phòng bằng mã; hỗ trợ 2 chế độ (chọn đáp án đúng / gõ từ vựng); đồng bộ trạng thái người chơi, câu hỏi, thời gian, điểm số theo thời gian thực qua WebSocket; tính kết quả dựa trên độ chính xác và thời gian trả lời.
+**Kiến trúc & Giao tiếp:**
+- **Kênh STOMP một chiều tới client:** STOMP sử dụng duy nhất một kênh riêng tư `/user/queue/battle` với cấu trúc envelope `{ "event": string, "data": object }`.
+- **STOMP Inbound (Client -> Server):** Các destination `/app/battle/queue/join`, `/app/battle/queue/leave`, `/app/battle/room/create`, `/app/battle/room/join`, `/app/battle/answer`, `/app/battle/rejoin`, `/app/battle/active-match`.
+- **REST APIs (`/battles/*`):**
+  - `GET /battles/history?page=1&size=10&result=WIN|LOSE|DRAW`: Lịch sử các trận `FINISHED` của người dùng hiện tại, trả về `PageResponse<BattleHistoryItemResponse>`.
+  - `GET /battles/{matchId}`: Chi tiết câu hỏi và câu trả lời từng vòng của trận `FINISHED` mà user tham gia.
+  - `GET /battles/stats`: Thống kê tổng số trận, thắng, thua, hòa, tỉ lệ thắng (winRate).
+- **Trạng thái trong RAM & Giới hạn Single-Instance:**
+  - Trạng thái live matches, hàng đợi và phòng chờ được lưu trữ trong bộ nhớ (in-memory registries).
+  - Hệ thống vận hành ở mô hình **single-instance** (không hỗ trợ scale ngang đa instance).
+  - Khi server restart, các trận chưa xong còn dang dở sẽ tự động được dọn dẹp chuyển sang trạng thái `CANCELLED` bởi `BattleOrphanCleanupListener`.
+- **Cơ chế mất kết nối & Rejoin:**
+  - Đếm kết nối dựa trên session STOMP đã subscribe đích danh `/user/queue/battle`.
+  - Khi người chơi mất kết nối: kích hoạt grace timer `reconnect-grace-ms` (15s). Người chơi có thể gọi `/app/battle/rejoin` để nhận snapshot và tiếp tục thi đấu.
+  - Hết 15s không kết nối lại: xử thua (forfeit). Nếu cả hai người cùng ngắt kết nối: trận đấu bị hủy (`CANCELLED`).
+- **Cơ chế cấp XP:**
+  - Chỉ áp dụng cho chế độ ghép ngẫu nhiên (`RANDOM`) và người chơi trả lời đúng tối thiểu `min-correct-for-xp` câu (mặc định 3 câu).
+  - Người bị xử thua do disconnect/forfeit không được nhận XP.
+  - Thắng: phát `XpGainedEvent` với `BATTLE_WIN`; Thua hoặc Hòa: phát `BATTLE_LOSE`.
+- **Cấu hình `app.battle.*`:**
+  - `total-rounds`: Số vòng mỗi trận (10 vòng).
+  - `question-time-ms`: Thời gian mỗi vòng (15,000 ms).
+  - `countdown-ms`: Đếm ngược trước khi bắt đầu trận (3,000 ms).
+  - `round-gap-ms`: Thời gian hiển thị kết quả vòng giữa các câu hỏi (2,500 ms).
+  - `queue-timeout-ms`: Thời gian tối đa trong hàng đợi ghép ngẫu nhiên (60,000 ms).
+  - `reconnect-grace-ms`: Thời gian chờ kết nối lại trước khi xử thua (15,000 ms).
+  - `room-ttl-ms`: Không còn dùng trong logic phòng (phòng tự hủy khi người tạo disconnect).
+  - `min-correct-for-xp`: Số câu đúng tối thiểu để nhận XP (3 câu).
+  - `min-cards-required`: Số lượng thẻ từ vựng tối thiểu trong hệ thống để khởi tạo trận (10 thẻ).
+  - `answer-grace-ms`: Độ trễ mạng cho phép khi nộp đáp án (300 ms).
+- **Lỗi nghiệp vụ (`AppError`):** `BATTLE_MATCH_NOT_FOUND`, `BATTLE_PARTICIPANT_NOT_FOUND`, `BATTLE_ROOM_NOT_FOUND`, `BATTLE_ROOM_FULL`, `BATTLE_ROOM_ALREADY_STARTED`, `BATTLE_QUESTION_TIMEOUT`, `BATTLE_QUESTION_ALREADY_ANSWERED`, `BATTLE_NOT_ENOUGH_CARDS`, `CANNOT_BATTLE_YOURSELF`.
+
+
 
 ---
 
@@ -331,6 +389,55 @@ gamification/
 
 ---
 
+## 16. `file/`
+**Ý nghĩa:** Lưu trữ file người dùng (ảnh đại diện, ảnh bài viết, audio shadowing/speaking) trên Cloudflare R2 qua presigned URL — backend không đi qua dòng byte của file. File được xác thực bằng magic bytes trước khi được công khai. **Không có bảng CSDL và không có job định kỳ**: layout của bucket tự mang ý nghĩa.
+
+```
+file/
+├── controller/FileController.java
+├── service/R2Service.java, R2ServiceImpl.java
+├── listener/FileLifecycleListener.java (nghe 3 event: promote sang vùng vĩnh viễn, dọn file cũ)
+├── util/FileSignatureVerifier.java (bảng magic bytes, utility thuần không phụ thuộc Spring)
+├── util/FileKey.java (hằng vùng + đổi vùng, utility thuần)
+└── dto/
+    ├── request/PresignedUrlRequest.java, CompleteMultipartRequest.java, CompletedPartInfo.java, AbortMultipartRequest.java, VerifyUploadRequest.java
+    └── response/PresignedUrlResponse.java, InitiateMultipartResponse.java, CompleteMultipartResponse.java, VerifiedFileResponse.java
+```
+
+**Ba vùng trên bucket, mỗi vùng một nghĩa:**
+
+| Vùng | Nghĩa | Quy tắc vòng đời |
+|---|---|---|
+| `staging/{userId}/{uuid}.{ext}` | vừa tải lên, chưa kiểm tra | xoá sau 1 ngày |
+| `verified/{userId}/{uuid}.{ext}` | đã hợp lệ, **chưa ai dùng** | xoá sau 3 ngày |
+| `uploads/{userId}/{uuid}.{ext}` | **đã có bản ghi trỏ tới** | không — không ai đụng |
+
+File người dùng tải lên rồi không
+dùng tới sẽ nằm ở `verified/` và tự biến mất theo quy tắc vòng đời. Đổi lại, CSDL lưu key
+`uploads/`, nên `uploads/` không bao giờ chứa file nào chưa có bản ghi nào trỏ tới. Tên file không
+đổi khi đổi vùng từ `verified` sang `uploads/` nên `verified/12/a.png` và `uploads/12/a.png` là cùng một file ở hai nơi.
+
+**Luồng upload:**
+1. **Presign** — cấp key tạm `staging/{userId}/{uuid}.{ext}`. Client PUT thẳng lên R2, không đi qua backend.
+2. **Verify** (`POST /files/verifications`) — `headObject` lấy size thật, đọc 64 byte đầu bằng Range request, đối chiếu magic bytes với Content-Type client khai. Sai thì xoá object; đúng thì `copyObject` sang `verified/{userId}/{uuid}.{ext}` (đuôi lấy từ mime thật, không từ tên file client gửi lên) rồi xoá bản `staging/`.
+
+**Trần dung lượng tính theo nhóm định dạng**, khai trong `MediaKind.maxBytes()`: ảnh 5 MB, video 100 MB, audio 25 MB. 
+
+3. **Gắn vào bản ghi** — module sở hữu ghi key `uploads/` vào CSDL, commit, rồi phát `FileAttachedEvent`; `FileLifecycleListener` copy `verified/` → `uploads/` và xoá bản chờ.
+
+4. **Dọn `staging/` và `verified/`** — quy tắc vòng đời của R2 sẽ tự xóa, cấu hình trên Cloudflare.
+
+**Đường dẫn phẳng:** `{vùng}/{userId}/{uuid}.{ext}`.  Mọi thành phần của key do server sinh — `userId` lấy từ token, tên là UUID mới sinh, đuôi lấy từ mime đã xác thực. Không có chuỗi nào từ request lọt vào key, nên không cần chặn traversal và không có đường trỏ tới file của người khác.
+
+**Điều phối bằng event — event-driven:** key là UUID nên mỗi file một tên riêng, module `file` không có cách nào đoán file nào là file cũ, và cũng không biết file nào đã được dùng. Module sở hữu dữ liệu thì biết chính xác (nó vừa đổi trường file trong entity của mình), nên nó phát event trong `common/event/`:
+
+| Event | Phát khi | Listener làm |
+|---|---|---|
+| `FileAttachedEvent(verifiedFileKey, uploadsFileKey)` | đã commit bản ghi tham chiếu tới file | copy `verified/` → `uploads/` |
+| `FileDeletedEvent(fileKeys)` | xoá bản ghi (thay file hoặc xoá hoàn toàn) | xoá các key cũ trong `fileKeys` |
+
+---
+
 ## Nguyên tắc phân tầng trong mỗi package core
 
 - **controller/**: nhận request, validate (`@Valid`), gọi service, không chứa logic nghiệp vụ.
@@ -338,3 +445,5 @@ gamification/
 - **repository/**: interface `JpaRepository`/`JpaSpecificationExecutor`, chỉ chứa truy vấn dữ liệu.
 - **entity/**: ánh xạ bảng DB (`@Entity`), kế thừa `common.entity.BaseEntity`.
 - **dto/**: tách `request/` và `response/`, không tái sử dụng entity làm response để tránh lộ dữ liệu và dễ tuỳ biến theo từng API.
+- **util/**: hàm/ngữ cảnh thuần, không phụ thuộc Spring, không I/O (vd `FileSignatureVerifier`). Không phải bean.
+- **enums/**: enum nghiệp vụ thuần (vd `PostStatus`, `ReportStatus`) mang bảng hằng trạng thái, không phải bean.

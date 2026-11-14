@@ -32,7 +32,6 @@ CREATE TABLE users (
 ```sql
 CREATE TABLE tags (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  code VARCHAR(100) NOT NULL UNIQUE,
   label VARCHAR(150) NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -40,7 +39,6 @@ CREATE TABLE tags (
 
 CREATE TABLE cefr_levels (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  code VARCHAR(10) NOT NULL UNIQUE,     -- A1, A2, B1, B2, C1, C2
   label VARCHAR(100) NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -64,6 +62,7 @@ CREATE TABLE decks (
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_deck_owner (owner_type, owner_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- User deck xoá cứng, card của deck đó thành mồ côi, state không bị ảnh hưởng. Card mồ côi không có state nào bị job định kỳ xoá, kèm sự kiện xoá file image_url
 
 -- Bảng junction thay cho mảng tagIds[] / cefrLevelIds[] nhúng trong deck
 CREATE TABLE deck_tags (
@@ -97,8 +96,8 @@ CREATE TABLE topics (
 
 CREATE TABLE cards (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  deck_id BIGINT UNSIGNED NOT NULL,
-  topic_id BIGINT UNSIGNED NOT NULL,
+  deck_id BIGINT UNSIGNED NULL, 
+  topic_id BIGINT UNSIGNED NULL, -- NULL = card mồ côi (deck/topic gốc đã bị xoá)
   `order` INT UNSIGNED NOT NULL DEFAULT 0,
   term VARCHAR(255) NOT NULL,
   pos VARCHAR(50),                       -- part of speech
@@ -110,10 +109,8 @@ CREATE TABLE cards (
   image_url VARCHAR(500),
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
-  FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE SET NULL,
-  INDEX idx_card_deck (deck_id),
-  INDEX idx_card_topic (topic_id)
+  FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE SET NULL,
+  FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Tách mảng nhúng phonetics[] thành bảng con
@@ -129,8 +126,6 @@ CREATE TABLE card_phonetics (
 CREATE TABLE user_card_states (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   card_id BIGINT UNSIGNED NOT NULL,
-  deck_id BIGINT UNSIGNED NOT NULL,
-  topic_id BIGINT UNSIGNED NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,
   srs_ease_factor DECIMAL(4,2) NOT NULL DEFAULT 2.50,
   srs_interval INT UNSIGNED NOT NULL DEFAULT 0,
@@ -140,16 +135,12 @@ CREATE TABLE user_card_states (
   flags_hidden BOOLEAN NOT NULL DEFAULT FALSE,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-  FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
-  FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE SET NULL,
+  FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE, -- chủ đích xoá cứng card là xoá state.
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   UNIQUE KEY uq_user_card (user_id, card_id),
-  INDEX idx_due_review (user_id, srs_next_review_at)
+  INDEX idx_due_review (user_id, flags_hidden, srs_next_review_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
-
-**Ghi chú tối ưu:** thêm `INDEX idx_due_review (user_id, srs_next_review_at)`
 
 ---
 
@@ -446,15 +437,18 @@ CREATE TABLE posts (
   group_id BIGINT UNSIGNED NOT NULL,
   title VARCHAR(255) NOT NULL,
   content TEXT NOT NULL,
-  status ENUM('PENDING','NEEDS_REVIEW','PUBLISHED','HIDDEN','REJECTED') NOT NULL DEFAULT 'PENDING',
+  status ENUM('PENDING','NEEDS_REVIEW','PUBLISHED','REJECTED','DELETED') NOT NULL DEFAULT 'PENDING',
   like_count INT UNSIGNED NOT NULL DEFAULT 0,
   comment_count INT UNSIGNED NOT NULL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (group_id) REFERENCES post_groups(id) ON DELETE RESTRICT,
-  INDEX idx_post_status_time (status, created_at) -- cần tối ưu lại
+  INDEX idx_post_status_time (status, created_at),
+  INDEX idx_post_group_status_time (group_id, status, created_at),
+  INDEX idx_post_user_status_time (user_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Bài viết áp dụng xóa mềm (soft delete) bằng cách cập nhật status = 'DELETED'. Khi xóa mềm bài viết, tệp đính kèm trên R2 không bị xóa để bảo toàn lịch sử phục vụ kiểm toán.
 
 CREATE TABLE post_moderation_logs (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -462,7 +456,7 @@ CREATE TABLE post_moderation_logs (
   actor_type ENUM('AI','ADMIN') NOT NULL,
   actor_id BIGINT UNSIGNED NULL,              -- id admin nếu actor_type = ADMIN, NULL nếu AI
   action ENUM('AUTO_APPROVE','AUTO_REJECT','FLAG_FOR_REVIEW',
-              'MANUAL_APPROVE','MANUAL_REJECT','MANUAL_HIDE') NOT NULL,
+              'MANUAL_APPROVE','MANUAL_REJECT') NOT NULL,
   ai_label VARCHAR(100) NULL,                 -- ví dụ 'SPAM', 'HATE_SPEECH', 'CLEAN' (chỉ có khi actor_type = AI)
   ai_score DECIMAL(5,4) NULL,                 -- độ tin cậy AI trả về (chỉ có khi actor_type = AI)
   note VARCHAR(500) NULL,                     -- ghi chú của admin khi duyệt tay
@@ -478,6 +472,8 @@ CREATE TABLE post_media (
   media_type ENUM('IMAGE','VIDEO') NOT NULL,
   media_url VARCHAR(500) NOT NULL,
   `order` INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -494,8 +490,10 @@ CREATE TABLE comments (
   FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE CASCADE,
-  INDEX idx_comment_post (post_id, created_at)
+  INDEX idx_comment_post_parent_time (post_id, parent_comment_id, created_at),
+  INDEX idx_comment_parent_time (parent_comment_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Bình luận áp dụng xóa cứng (hard delete). Khi xóa bình luận, tệp đính kèm trên R2 sẽ bị xóa theo.
 
 -- Like cho comment
 CREATE TABLE comment_likes (
@@ -504,7 +502,8 @@ CREATE TABLE comment_likes (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (comment_id, user_id),
   FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_comment_like_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE post_likes (
@@ -513,7 +512,8 @@ CREATE TABLE post_likes (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (post_id, user_id),
   FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_post_like_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -555,7 +555,7 @@ CREATE TABLE report_images (
 ```sql
 CREATE TABLE payment_providers (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  code VARCHAR(50) NOT NULL UNIQUE,     -- 'SEPAY', 'VNPAY', 'MOMO'...
+  code VARCHAR(50) NOT NULL UNIQUE,     -- 'SEPAY', 'GPMPAY', 'VNPAY', 'MOMO'...
   name VARCHAR(150) NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -583,7 +583,8 @@ CREATE TABLE user_subscriptions (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (plan_id) REFERENCES premium_plans(id),
-  INDEX idx_active_sub (user_id, status, end_at)
+  INDEX idx_active_sub (user_id, status, end_at),
+  INDEX idx_sub_status_end_at (status, end_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE payment_transactions (
@@ -591,11 +592,11 @@ CREATE TABLE payment_transactions (
   subscription_id BIGINT UNSIGNED NULL,
   user_id BIGINT UNSIGNED NOT NULL,
   plan_id BIGINT UNSIGNED NOT NULL,
-  provider_id BIGINT UNSIGNED NOT NULL,
+  provider_id BIGINT UNSIGNED NULL,                -- NULL khi checkout, cập nhật khi nhận webhook thành công
   amount DECIMAL(12,2) NOT NULL,
   currency VARCHAR(10) NOT NULL DEFAULT 'VND',
-  provider_ref_code VARCHAR(100) NOT NULL UNIQUE,  -- mã đối soát: transfer_content (SePay), vnp_TxnRef (VNPay), orderId (Momo)...
-  metadata JSON NULL,                              -- field đặc thù riêng của từng cổng (số TK, bank gateway, v.v.) không cần cột cứng
+  provider_ref_code VARCHAR(100) NOT NULL UNIQUE,  -- mã đối soát: transfer_content (SePay, GpmPay)...
+  metadata JSON NULL,                              -- field đặc thù riêng của từng cổng (số TK, note đối soát, underpaid, v.v.)
   status ENUM('PENDING','SUCCESS','FAILED','REFUNDED') NOT NULL DEFAULT 'PENDING',
   paid_at DATETIME NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -603,7 +604,9 @@ CREATE TABLE payment_transactions (
   FOREIGN KEY (subscription_id) REFERENCES user_subscriptions(id) ON DELETE SET NULL,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (plan_id) REFERENCES premium_plans(id),
-  FOREIGN KEY (provider_id) REFERENCES payment_providers(id)
+  FOREIGN KEY (provider_id) REFERENCES payment_providers(id),
+  INDEX idx_tx_user_created (user_id, created_at),
+  INDEX idx_tx_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Log kỹ thuật: lưu MỌI lần webhook gọi tới, kể cả trùng lặp/lỗi — phục vụ tra soát, không phải nguồn tính tiền
@@ -619,6 +622,7 @@ CREATE TABLE payment_webhook_logs (
   processed_at DATETIME NULL,
   FOREIGN KEY (provider_id) REFERENCES payment_providers(id),
   FOREIGN KEY (transaction_id) REFERENCES payment_transactions(id) ON DELETE SET NULL,
+  UNIQUE KEY uk_webhook_log_provider_event (provider_id, event_id),
   INDEX idx_webhook_transaction (transaction_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
