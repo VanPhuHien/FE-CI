@@ -1,4 +1,4 @@
-# FE_CONVENTIONS.md — Elingo Frontend Conventions
+﻿# FE_CONVENTIONS.md — Elingo Frontend Conventions
 
 > Tài liệu này là **single source of truth** về architecture và code conventions cho frontend của Elingo.
 >
@@ -18,7 +18,7 @@
 | HTTP | **Axios** qua wrapper `apiClient.js` (file duy nhất, KHÔNG tạo thêm instance) |
 | Linting | `oxlint` (không phải ESLint) |
 | Formatter | `prettier` |
-| Test | `vitest` + `@testing-library/react` _(chưa cài, thêm khi cần)_ |
+| Test | `vitest` + `@testing-library/react` + `msw` (đã cài, xem mục Test) |
 | Icons | **Material Symbols Outlined** (Google) — KHÔNG dùng heroicons, lucide |
 
 ---
@@ -44,9 +44,9 @@ frontend/src/
 │   ├── Input/
 │   │   ├── Input.jsx
 │   │   └── Input.css
-│   ├── Modal/
-│   │   ├── Modal.jsx
-│   │   └── Modal.css
+│   ├── ConfirmModal/
+│   │   ├── ConfirmModal.jsx
+│   │   └── ConfirmModal.css
 │   ├── Pagination/
 │   │   ├── Pagination.jsx
 │   │   └── Pagination.css
@@ -121,7 +121,10 @@ frontend/src/
 │   └── utils.js          # Pure utility functions
 │
 └── tests/                # Unit / Integration tests
-    └── setupTests.js
+    ├── setup.js          # Setup chung (MSW, i18n thật, mock matchMedia...)
+    ├── utils/i18n.js     # Helper tr() / trRx() / LANGS / useLang()
+    ├── unit/i18n/        # Test kiểm tra key vi/en khớp nhau
+    └── ...
 ```
 
 > **Lưu ý quan trọng**: Project này dùng `modules/` thay vì `features/`. Quy tắc bên trong module giống nhau.
@@ -149,7 +152,7 @@ frontend/src/
 |---|---|---|
 | Page component | `PascalCase + Page` suffix | `LoginPage`, `LessonListPage` |
 | Layout component | `PascalCase + Layout` suffix | `AdminLayout` |
-| Shared component | `PascalCase` không suffix | `Input`, `Modal`, `Pagination` |
+| Shared component | `PascalCase` không suffix | `Input`, `ConfirmModal`, `Pagination` |
 | Feature component | `PascalCase` mô tả vai trò | `LessonCard`, `FlashCard`, `BattleScoreBoard` |
 
 ### 3.3 Function & Variable
@@ -260,6 +263,7 @@ onNavigate('/account-verification', { email })
 - **Request Interceptor**: Gắn `Bearer token` từ `localStorage`
 - **Response Interceptor**: Tự refresh khi 401, xử lý failedQueue
 - Khi refresh thất bại: xóa localStorage → dispatch `auth:logout` → redirect `/login`
+- Goi `/auth/refresh` phai qua `requestRefresh()` (axios thuan, khong gan Authorization); **khong** goi `apiClient.post('/auth/refresh')`.
 
 ### 5.2 Module API Files
 
@@ -550,6 +554,13 @@ const [totalPages, setTotalPages] = useState(1)
 10. Icons: Material Symbols Outlined — KHÔNG dùng icon library khác
 11. Đọc `frontend/docs/` và code liên quan trước khi tạo UI/file mới
 12. Mọi surface, input, alert và trạng thái interactive mới phải có dark-theme counterpart và responsive behavior
+
+### Quy tắc test i18n
+
+1. Không hard-code chuỗi dịch trong test. Dùng `tr('ns:key')`; với nút có icon thì dùng `trRx('ns:key')` kèm `role`.
+2. Test kiểm tra text hiển thị dùng `describe.each(LANGS)`. Test chỉ kiểm hành vi thì không cần.
+3. Thêm trang mới: thêm key vào **cả** `vi` và `en` (test `locales.parity` sẽ báo nếu quên), viết test dùng `tr()`. Không phải sửa `setup.js`.
+4. Dữ liệu giả của backend trong test dùng chuỗi tùy ý, không phải bản dịch.
 
 ### CẦN TRÁNH
 
